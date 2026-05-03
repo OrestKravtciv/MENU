@@ -3,9 +3,12 @@
 #include "driver/spi_master.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "freertos/semphr.h"
 
 static const char *TAG = "spi_driver";
 static spi_device_handle_t spi_handle = NULL;
+static SemaphoreHandle_t dma_semaphore = NULL;
+static volatile bool dma_transfer_complete = false;
 
 #define SPI_HOST_ID SPI2_HOST
 #define SPI_SCLK_PIN 18
@@ -15,6 +18,12 @@ static spi_device_handle_t spi_handle = NULL;
 #define SPI_DC_PIN   21
 #define SPI_RST_PIN  22
 #define SPI_CLOCK_HZ 10000000
+
+static void IRAM_ATTR dma_transfer_done(spi_transaction_t *trans) {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    xSemaphoreGiveFromISR(dma_semaphore, &xHigherPriorityTaskWoken);
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
 
 static esp_err_t spi_driver_transmit(const uint8_t *data, size_t len, bool is_data)
 {
@@ -87,6 +96,12 @@ esp_err_t spi_driver_init(void)
     gpio_set_level(SPI_DC_PIN, 1);
     gpio_set_level(SPI_RST_PIN, 1);
 
+    dma_semaphore = xSemaphoreCreateBinary();
+    if (dma_semaphore == NULL) {
+        ESP_LOGE(TAG, "Failed to create DMA semaphore");
+        return ESP_ERR_NO_MEM;
+    }
+
     return ESP_OK;
 }
 
@@ -124,4 +139,35 @@ esp_err_t spi_driver_write_data(const uint8_t *data, size_t len)
 esp_err_t spi_driver_write_bytes(const uint8_t *data, size_t len, bool is_data)
 {
     return spi_driver_transmit(data, len, is_data);
+}
+
+
+esp_err_t spi_driver_write_framebuffer(const uint8_t *data, size_t len) {
+    if (spi_handle == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    gpio_set_level(SPI_DC_PIN, 1); // Data mode
+
+    spi_transaction_t trans = {
+        .flags = SPI_TRANS_MODE_QIO, // Use QIO mode for faster transfer
+        .length = len * 8,
+        .tx_buffer = data,
+        .rx_buffer = NULL,
+    };
+
+    // For large transfers, use DMA
+    if (len > 64) { // Threshold for DMA vs polling
+        dma_transfer_complete = false;
+        esp_err_t err = spi_device_queue_trans(spi_handle, &trans, portMAX_DELAY);
+        if (err != ESP_OK) return err;
+        
+        // Wait for completion
+        if (xSemaphoreTake(dma_semaphore, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            return ESP_ERR_TIMEOUT;
+        }
+        return ESP_OK;
+    } else {
+        return spi_device_polling_transmit(spi_handle, &trans);
+    }
 }
