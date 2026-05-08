@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include "esp_err.h"
+#include "framebuffer.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -25,7 +26,7 @@ extern "C" {
 
 esp_err_t st7735s_init(void);
 esp_err_t st7735s_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);
-esp_err_t st7735s_write_framebuffer(const uint16_t *framebuffer, size_t len);
+esp_err_t st7735s_write_framebuffer(framebuffer_t *fb, const uint16_t *framebuffer, size_t len);
 
 #ifdef __cplusplus
 }

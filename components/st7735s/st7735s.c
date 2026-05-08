@@ -1,7 +1,10 @@
 #include "st7735s.h"
 #include "spi_driver.h"
+#include "framebuffer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "driver/gpio.h"
+#include "esp_heap_caps.h"
 #include <stdbool.h>
 
 static const char *TAG = "ST7735S";
@@ -24,9 +27,9 @@ esp_err_t st7735s_init(void) {
     
     // Hardware reset
     gpio_set_level(SPI_RST_PIN, 0);
-    vTaskDelay(pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(100));
     gpio_set_level(SPI_RST_PIN, 1);
-    vTaskDelay(pdMS_TO_TICKS(120));
+    vTaskDelay(pdMS_TO_TICKS(100));
     
     // Software reset
     err = spi_driver_write_cmd(ST7735S_SWRESET);
@@ -36,7 +39,15 @@ esp_err_t st7735s_init(void) {
     // Sleep out
     err = spi_driver_write_cmd(ST7735S_SLPOUT);
     if (err != ESP_OK) return err;
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(pdMS_TO_TICKS(150));
+
+    // Memory access control (RGB order, etc.)
+    err = spi_driver_write_cmd(ST7735S_MADCTL);
+    if (err != ESP_OK) return err;
+    uint8_t madctl_data = 0x00; // RGB order, default orientation
+    err = spi_driver_write_data(&madctl_data, 1);
+    if (err != ESP_OK) return err;
+    vTaskDelay(pdMS_TO_TICKS(10));
 
     // Set color mode to 16-bit
     err = spi_driver_write_cmd(ST7735S_COLMOD);
@@ -44,21 +55,15 @@ esp_err_t st7735s_init(void) {
     uint8_t colmod_data = 0x05; // 16-bit color
     err = spi_driver_write_data(&colmod_data, 1);
     if (err != ESP_OK) return err;
-    
-    // Memory access control (RGB order, etc.)
-    err = spi_driver_write_cmd(ST7735S_MADCTL);
-    if (err != ESP_OK) return err;
-    uint8_t madctl_data = 0xC0; // RGB order, vertical refresh
-    err = spi_driver_write_data(&madctl_data, 1);
-    if (err != ESP_OK) return err;
-    
-    // Normal display mode
-    err = spi_driver_write_cmd(ST7735S_NORON);
-    if (err != ESP_OK) return err;
-    
-    // Display on
-    err = spi_driver_write_cmd(ST7735S_DISPON);
-    if (err != ESP_OK) return err;
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    // Display OFF
+    err = spi_driver_write_cmd(0x28); // Display OFF command
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
+    // Display ON
+    err = spi_driver_write_cmd(ST7735S_DISPON); // Display ON command
+    vTaskDelay(pdMS_TO_TICKS(100));
     
     return ESP_OK;
 }
@@ -89,7 +94,7 @@ esp_err_t st7735s_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
     return ESP_OK;
 }
 
-esp_err_t st7735s_write_framebuffer(const uint16_t *framebuffer, size_t len) {
+esp_err_t st7735s_write_framebuffer(framebuffer_t *fb, const uint16_t *framebuffer, size_t len) {
     esp_err_t err;
     
     // Set full screen window only if it changed
@@ -102,6 +107,7 @@ esp_err_t st7735s_write_framebuffer(const uint16_t *framebuffer, size_t len) {
     err = spi_driver_write_cmd(ST7735S_RAMWR);
     if (err != ESP_OK) return err;
     
-    // Write framebuffer data (convert to bytes)
-    return spi_driver_write_framebuffer((const uint8_t *)framebuffer, len * 2);
+    // `framebuffer` already stores pixel words in big-endian order so it can be sent directly.
+    size_t byte_len = len * 2;
+    return spi_driver_write_framebuffer((const uint8_t *)framebuffer, byte_len);
 }
